@@ -1,0 +1,1834 @@
+openapi: 3.1.0
+
+info:
+  title: Payment API
+  version: 1.0.0
+  summary: Payment processing API
+
+servers:
+  - url: https://api.example.com
+    description: Production
+  - url: https://sandbox.example.com
+    description: Sandbox
+
+tags:
+  - name: Authentication
+    description: |
+      Every request must include the following headers:
+
+      | Header | Description |
+      |---|---|
+      | `Api-Terminal-ID` | Terminal identifier issued in the merchant dashboard |
+      | `Api-Signature` | HMAC-SHA256 request signature (see below) |
+      | `Api-Timestamp` | Unix timestamp of the request (seconds) |
+      | `Api-Idempotency-Key` | UUID, required for all mutating requests (POST) |
+
+      ## Obtaining credentials
+
+      `Api-Terminal-ID` and the secret key are available in the **merchant dashboard** after onboarding.
+
+      ## Signature algorithm
+
+      The signature is computed as HMAC-SHA256 over a concatenated string using the secret key.
+
+      **For POST requests (with body):**
+      ```
+      signature = HMAC-SHA256(
+        key    = secret_key,
+        message = Api-Timestamp + Api-Terminal-ID + raw_request_body
+      )
+      ```
+
+      **For GET and DELETE requests (no body):**
+      ```
+      signature = HMAC-SHA256(
+        key     = secret_key,
+        message = Api-Timestamp + Api-Terminal-ID
+      )
+      ```
+
+      The resulting signature is encoded as a lowercase hex string and passed in the `Api-Signature` header.
+
+      ## Examples
+
+      **POST request**
+      ```
+      Api-Terminal-ID:     1234
+      Api-Timestamp:       1713180000
+      Api-Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
+
+      raw_body = '{"type":"payin","merchant_data":{"order_id":"order_9987"},...}'
+
+      message       = "1713180000" + "1234" + raw_body
+      Api-Signature = HMAC-SHA256(secret_key, message)
+                    = "3c4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4"
+      ```
+
+      **GET request**
+      ```
+      Api-Terminal-ID: 1234
+      Api-Timestamp:   1713180000
+
+      message       = "1713180000" + "1234"
+      Api-Signature = HMAC-SHA256(secret_key, message)
+                    = "9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e"
+      ```
+
+      ## Timestamp tolerance
+
+      The server rejects requests where `Api-Timestamp` differs from the current server time by more than **5 minutes** to prevent replay attacks.
+
+  - name: Transactions
+    description: Payment transaction operations
+  - name: Merchant
+    description: Merchant account operations
+  - name: Payment links
+    description: Hosted payment link operations
+  - name: Subscriptions
+    description: Subscription management operations
+
+security:
+  - ApiAuth: []
+
+paths:
+  /api/v1/transactions:
+    post:
+      summary: Create transaction
+      operationId: createTransaction
+      tags:
+        - Transactions
+      parameters:
+        - $ref: '#/components/parameters/ApiTerminalId'
+        - $ref: '#/components/parameters/ApiIdempotencyKey'
+        - $ref: '#/components/parameters/ApiSignature'
+        - $ref: '#/components/parameters/ApiTimestamp'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      responses:
+        '201':
+          description: Transaction created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseProcessing'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/DeclinedError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    get:
+      summary: Get transaction by order ID
+      operationId: getTransactionByOrderId
+      tags:
+        - Transactions
+      parameters:
+        - $ref: '#/components/parameters/ApiTerminalId'
+        - $ref: '#/components/parameters/ApiSignature'
+        - $ref: '#/components/parameters/ApiTimestamp'
+        - name: order_id
+          in: query
+          required: true
+          description: Merchant order ID
+          schema:
+            type: string
+          example: "order_9987"
+      responses:
+        '200':
+          description: Transaction found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+
+  /api/v1/transactions/{transaction_id}:
+    get:
+      summary: Get transaction by ID
+      operationId: getTransactionById
+      tags:
+        - Transactions
+      parameters:
+        - $ref: '#/components/parameters/PathTransactionId'
+        - $ref: '#/components/parameters/ApiTerminalId'
+        - $ref: '#/components/parameters/ApiSignature'
+        - $ref: '#/components/parameters/ApiTimestamp'
+      responses:
+        '200':
+          description: Transaction found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/transactions/{transaction_id}/confirm:
+    post:
+      summary: Confirm action
+      operationId: confirmTransaction
+      tags:
+        - Transactions
+      parameters:
+        - $ref: '#/components/parameters/PathTransactionId'
+        - $ref: '#/components/parameters/ApiTerminalId'
+        - $ref: '#/components/parameters/ApiIdempotencyKey'
+        - $ref: '#/components/parameters/ApiSignature'
+        - $ref: '#/components/parameters/ApiTimestamp'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmActionRequest'
+      responses:
+        '200':
+          description: Action confirmed, transaction updated in place
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseProcessing'
+        '201':
+          description: Action confirmed, new operation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseProcessing'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/transactions/{transaction_id}/refunds:
+    post:
+      summary: Refund
+      operationId: createRefundTransaction
+      tags:
+        - Transactions
+      parameters:
+        - $ref: '#/components/parameters/PathTransactionId'
+        - $ref: '#/components/parameters/ApiTerminalId'
+        - $ref: '#/components/parameters/ApiIdempotencyKey'
+        - $ref: '#/components/parameters/ApiSignature'
+        - $ref: '#/components/parameters/ApiTimestamp'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationRequest'
+      responses:
+        '200':
+          description: Refund applied, transaction updated in place
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseProcessing'
+        '201':
+          description: Refund created as a new operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseProcessing'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/transactions/{transaction_id}/cancel:
+    post:
+      summary: Cancel
+      operationId: cancelTransaction
+      tags:
+        - Transactions
+      parameters:
+        - $ref: '#/components/parameters/PathTransactionId'
+        - $ref: '#/components/parameters/ApiTerminalId'
+        - $ref: '#/components/parameters/ApiIdempotencyKey'
+        - $ref: '#/components/parameters/ApiSignature'
+        - $ref: '#/components/parameters/ApiTimestamp'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationRequest'
+      responses:
+        '200':
+          description: Transaction cancelled, updated in place
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseProcessing'
+        '201':
+          description: Cancellation created as a new operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseProcessing'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/transactions/{transaction_id}/capture:
+    post:
+      summary: Capture
+      operationId: captureTransaction
+      description: Confirms charge of previously blocked funds (payment_type = block)
+      tags:
+        - Transactions
+      parameters:
+        - $ref: '#/components/parameters/PathTransactionId'
+        - $ref: '#/components/parameters/ApiTerminalId'
+        - $ref: '#/components/parameters/ApiIdempotencyKey'
+        - $ref: '#/components/parameters/ApiSignature'
+        - $ref: '#/components/parameters/ApiTimestamp'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationRequest'
+      responses:
+        '200':
+          description: Funds captured, transaction updated in place
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseProcessing'
+        '201':
+          description: Capture created as a new operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseProcessing'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/subscriptions/{token}:
+    delete:
+      summary: Cancel subscription
+      operationId: cancelSubscription
+      tags:
+        - Subscriptions
+      parameters:
+        - $ref: '#/components/parameters/PathRecurrentToken'
+        - $ref: '#/components/parameters/ApiTerminalId'
+        - $ref: '#/components/parameters/ApiSignature'
+        - $ref: '#/components/parameters/ApiTimestamp'
+      responses:
+        '204':
+          description: Subscription cancelled
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/payment-links:
+    post:
+      summary: Create payment link
+      operationId: createPaymentLink
+      tags:
+        - Payment links
+      parameters:
+        - $ref: '#/components/parameters/ApiTerminalId'
+        - $ref: '#/components/parameters/ApiIdempotencyKey'
+        - $ref: '#/components/parameters/ApiSignature'
+        - $ref: '#/components/parameters/ApiTimestamp'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentLinkRequest'
+      responses:
+        '201':
+          description: Payment link created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLinkResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/merchant/balance:
+    get:
+      summary: Get merchant balance
+      operationId: getMerchantBalance
+      tags:
+        - Merchant
+      parameters:
+        - $ref: '#/components/parameters/ApiTerminalId'
+        - $ref: '#/components/parameters/ApiSignature'
+        - $ref: '#/components/parameters/ApiTimestamp'
+      responses:
+        '200':
+          description: Balance retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MerchantBalanceResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+
+  # ─── Parameters ─────────────────────────────────────────────────
+
+  parameters:
+    PathTransactionId:
+      name: transaction_id
+      in: path
+      required: true
+      description: Numeric transaction identifier
+      schema:
+        type: string
+        pattern: '^\d+$'
+      example: "2148010266"
+
+    PathRecurrentToken:
+      name: token
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+    ApiTerminalId:
+      name: Api-Terminal-ID
+      in: header
+      required: true
+      schema:
+        type: string
+      example: "1234"
+
+    ApiIdempotencyKey:
+      name: Api-Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+    ApiSignature:
+      name: Api-Signature
+      in: header
+      required: true
+      schema:
+        type: string
+      example: "3c4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4"
+
+    ApiTimestamp:
+      name: Api-Timestamp
+      in: header
+      required: true
+      schema:
+        type: integer
+      example: 1713180000
+
+  # ─── Responses ──────────────────────────────────────────────────
+
+  responses:
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    UnauthorizedError:
+      description: Signature invalid or missing
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    NotFoundError:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    ConflictError:
+      description: Conflict (duplicate idempotency key or invalid state transition)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    DeclinedError:
+      description: Payment rejected by acquirer or issuer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  # ─── Schemas ────────────────────────────────────────────────────
+
+  schemas:
+
+    # ── Request ───────────────────────────────────────────────────
+
+    PaymentRequest:
+      description: Payment request. Structure depends on type field.
+      oneOf:
+        - $ref: '#/components/schemas/PaymentRequestPayin'
+        - $ref: '#/components/schemas/PaymentRequestPayout'
+      discriminator:
+        propertyName: type
+        mapping:
+          payin:  '#/components/schemas/PaymentRequestPayin'
+          payout: '#/components/schemas/PaymentRequestPayout'
+
+    PaymentRequestBase:
+      type: object
+      required:
+        - type
+        - merchant_data
+        - financial_data
+        - customer_data
+        - transaction_data
+      properties:
+        merchant_data:
+          $ref: '#/components/schemas/MerchantData'
+        financial_data:
+          $ref: '#/components/schemas/FinancialData'
+        flow_data:
+          $ref: '#/components/schemas/FlowData'
+        customer_data:
+          $ref: '#/components/schemas/CustomerData'
+
+    PaymentRequestPayin:
+      title: payin
+      allOf:
+        - $ref: '#/components/schemas/PaymentRequestBase'
+        - type: object
+          properties:
+            type:
+              type: string
+              enum: [payin]
+            transaction_data:
+              description: Payment method details. Structure depends on method field.
+              oneOf:
+                - $ref: '#/components/schemas/PayinTransactionDataCard'
+                - $ref: '#/components/schemas/PayinTransactionDataP2p'
+                - $ref: '#/components/schemas/PayinTransactionDataQr'
+                - $ref: '#/components/schemas/PayinTransactionDataMobile'
+                - $ref: '#/components/schemas/PayinTransactionDataToken'
+              discriminator:
+                propertyName: method
+                mapping:
+                  card:   '#/components/schemas/PayinTransactionDataCard'
+                  p2p:    '#/components/schemas/PayinTransactionDataP2p'
+                  qr:     '#/components/schemas/PayinTransactionDataQr'
+                  mobile: '#/components/schemas/PayinTransactionDataMobile'
+                  token:  '#/components/schemas/PayinTransactionDataToken'
+
+    PaymentRequestPayout:
+      title: payout
+      allOf:
+        - $ref: '#/components/schemas/PaymentRequestBase'
+        - type: object
+          properties:
+            type:
+              type: string
+              enum: [payout]
+            transaction_data:
+              description: Payment method details. Structure depends on method field.
+              oneOf:
+                - $ref: '#/components/schemas/PayoutTransactionDataCard'
+                - $ref: '#/components/schemas/PayoutTransactionDataBankAccount'
+                - $ref: '#/components/schemas/PayoutTransactionDataToken'
+                - $ref: '#/components/schemas/PayoutTransactionDataMobile'
+                - $ref: '#/components/schemas/PayoutTransactionDataSbp'
+                - $ref: '#/components/schemas/PayoutTransactionDataWallet'
+              discriminator:
+                propertyName: method
+                mapping:
+                  card:         '#/components/schemas/PayoutTransactionDataCard'
+                  bank_account: '#/components/schemas/PayoutTransactionDataBankAccount'
+                  token:        '#/components/schemas/PayoutTransactionDataToken'
+                  mobile:       '#/components/schemas/PayoutTransactionDataMobile'
+                  sbp:          '#/components/schemas/PayoutTransactionDataSbp'
+                  wallet:       '#/components/schemas/PayoutTransactionDataWallet'
+
+    PayinTransactionDataCard:
+      title: card
+      type: object
+      required:
+        - method
+        - details
+      properties:
+        method:
+          type: string
+          enum: [card]
+        details:
+          $ref: '#/components/schemas/CardDetails'
+
+    PayinTransactionDataP2p:
+      title: p2p
+      type: object
+      required:
+        - method
+      properties:
+        method:
+          type: string
+          enum: [p2p]
+
+    PayinTransactionDataQr:
+      title: qr
+      type: object
+      required:
+        - method
+      properties:
+        method:
+          type: string
+          enum: [qr]
+
+    PayinTransactionDataMobile:
+      title: mobile
+      type: object
+      required:
+        - method
+        - details
+      properties:
+        method:
+          type: string
+          enum: [mobile]
+        details:
+          $ref: '#/components/schemas/MobilePayinDetails'
+
+    PayinTransactionDataToken:
+      title: token
+      type: object
+      required:
+        - method
+        - details
+      properties:
+        method:
+          type: string
+          enum: [token]
+        details:
+          type: object
+          required:
+            - token
+          properties:
+            token:
+              type: string
+              format: uuid
+              description: Recurrent token from previous transaction
+
+    PayoutTransactionDataCard:
+      title: card
+      type: object
+      required:
+        - method
+        - details
+      properties:
+        method:
+          type: string
+          enum: [card]
+        details:
+          $ref: '#/components/schemas/PayoutCardDetails'
+
+    PayoutTransactionDataBankAccount:
+      title: bank_account
+      type: object
+      required:
+        - method
+      properties:
+        method:
+          type: string
+          enum: [bank_account]
+        details:
+          $ref: '#/components/schemas/BankAccountDetails'
+
+    PayoutTransactionDataToken:
+      title: token
+      type: object
+      required:
+        - method
+        - details
+      properties:
+        method:
+          type: string
+          enum: [token]
+        details:
+          $ref: '#/components/schemas/TokenDetails'
+
+    PayoutTransactionDataMobile:
+      title: mobile
+      type: object
+      required:
+        - method
+        - details
+      properties:
+        method:
+          type: string
+          enum: [mobile]
+        details:
+          $ref: '#/components/schemas/MobilePayoutDetails'
+
+    PayoutTransactionDataSbp:
+      title: sbp
+      type: object
+      required:
+        - method
+      properties:
+        method:
+          type: string
+          enum: [sbp]
+        details:
+          $ref: '#/components/schemas/SbpDetails'
+
+    PayoutTransactionDataWallet:
+      title: wallet
+      type: object
+      required:
+        - method
+        - details
+      properties:
+        method:
+          type: string
+          enum: [wallet]
+        details:
+          $ref: '#/components/schemas/WalletDetails'
+
+    OperationRequest:
+      type: object
+      required:
+        - merchant_data
+        - financial_data
+      properties:
+        merchant_data:
+          $ref: '#/components/schemas/MerchantData'
+        financial_data:
+          $ref: '#/components/schemas/FinancialData'
+          description: >-
+            For partial refund or partial capture, specify the desired amount.
+            If equal to the original transaction amount, the operation is treated as full.
+
+    ConfirmActionRequest:
+      type: object
+      required:
+        - merchant_data
+        - financial_data
+        - result
+      properties:
+        merchant_data:
+          type: object
+          required:
+            - order_id
+          properties:
+            order_id:
+              type: string
+              examples:
+                - "order_9987"
+        financial_data:
+          $ref: '#/components/schemas/FinancialData'
+        result:
+          oneOf:
+            - $ref: '#/components/schemas/ConfirmActionResultThreeDSecure'
+            - $ref: '#/components/schemas/ConfirmActionResultGeneric'
+          discriminator:
+            propertyName: type
+            mapping:
+              threed_secure:    '#/components/schemas/ConfirmActionResultThreeDSecure'
+              redirect:         '#/components/schemas/ConfirmActionResultGeneric'
+              transfer_card:    '#/components/schemas/ConfirmActionResultGeneric'
+              transfer_phone:   '#/components/schemas/ConfirmActionResultGeneric'
+              transfer_qr:      '#/components/schemas/ConfirmActionResultGeneric'
+              transfer_account: '#/components/schemas/ConfirmActionResultGeneric'
+              top_up_mobile:    '#/components/schemas/ConfirmActionResultGeneric'
+
+    ConfirmActionResultThreeDSecure:
+      title: threed_secure
+      type: object
+      required:
+        - type
+        - details
+      properties:
+        type:
+          type: string
+          enum: [threed_secure]
+        details:
+          type: object
+          required:
+            - pares
+            - md
+          properties:
+            pares:
+              type: string
+            md:
+              type: string
+
+    ConfirmActionResultGeneric:
+      title: generic
+      type: object
+      required:
+        - type
+        - details
+      properties:
+        type:
+          type: string
+          enum: [redirect, transfer_card, transfer_phone, transfer_qr, transfer_account, top_up_mobile]
+        details:
+          type: object
+          required:
+            - confirmed
+          properties:
+            confirmed:
+              type: boolean
+
+    PaymentLinkRequest:
+      type: object
+      required:
+        - merchant_data
+        - financial_data
+        - customer_data
+      properties:
+        merchant_data:
+          $ref: '#/components/schemas/MerchantData'
+        financial_data:
+          $ref: '#/components/schemas/FinancialData'
+        flow_data:
+          $ref: '#/components/schemas/FlowData'
+        customer_data:
+          $ref: '#/components/schemas/CustomerData'
+
+    PaymentLinkResponse:
+      type: object
+      required:
+        - link_id
+        - merchant_data
+        - link_data
+      properties:
+        link_id:
+          type: string
+          examples:
+            - a1b2c3d4
+        merchant_data:
+          $ref: '#/components/schemas/MerchantData'
+        link_data:
+          type: object
+          required:
+            - url
+          properties:
+            url:
+              type: string
+              format: uri
+              examples:
+                - "https://pay.example.com/payment-links/a1b2c3d4"
+
+    MerchantBalanceResponse:
+      type: object
+      required:
+        - financial_data
+      properties:
+        financial_data:
+          type: array
+          items:
+            type: object
+            required:
+              - amount
+              - currency
+            properties:
+              amount:
+                type: integer
+                description: Balance in minor currency units
+              currency:
+                type: string
+                description: ISO 4217 currency code
+
+    MerchantData:
+      type: object
+      required:
+        - order_id
+      properties:
+        order_id:
+          type: string
+          examples:
+            - "order_9987"
+        description:
+          type: string
+          examples:
+            - Order payment
+        webhook_url:
+          type: string
+          format: uri
+          description: URL for payment status notifications. Optional — can be configured on terminal level
+          examples:
+            - https://merchant.com/webhook
+        return_url:
+          type: string
+          format: uri
+          description: Required for redirect-based methods (3DS, QR, P2P)
+          examples:
+            - https://merchant.com/return
+
+    FinancialData:
+      type: object
+      required:
+        - amount
+        - currency
+      properties:
+        amount:
+          type: integer
+          description: Amount in minor units (kopecks, tiyin)
+          examples:
+            - 10000
+        currency:
+          type: string
+          description: ISO 4217
+          examples:
+            - USD
+
+    FlowData:
+      type: object
+      properties:
+        is_recurrent:
+          type: boolean
+          default: false
+          description: Instructs the server to save a recurrent token after the transaction
+          examples:
+            - false
+        capture_mode:
+          type: string
+          enum: [auto, manual]
+          description: "Applicable for method = card, token. auto — funds captured immediately; manual — requires explicit /capture call"
+          examples:
+            - auto
+        threed_secure:
+          $ref: '#/components/schemas/ThreeDSecureRequest'
+
+    CustomerData:
+      type: object
+      properties:
+        contact_info:
+          $ref: '#/components/schemas/ContactInfo'
+        personal_info:
+          $ref: '#/components/schemas/PersonalInfo'
+        browser_info:
+          $ref: '#/components/schemas/BrowserInfo'
+        payer_info:
+          $ref: '#/components/schemas/PayerInfo'
+
+    ContactInfo:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          examples:
+            - user@example.com
+        phone:
+          type: string
+          examples:
+            - "+19991231212"
+        country:
+          type: string
+          description: ISO 3166-1 alpha-2
+          examples:
+            - US
+        city:
+          type: string
+          examples:
+            - New York
+        zip:
+          type: string
+          examples:
+            - "10001"
+        state:
+          type: string
+          examples:
+            - NY
+
+    PersonalInfo:
+      type: object
+      properties:
+        first_name:
+          type: string
+          examples:
+            - John
+        last_name:
+          type: string
+          examples:
+            - Doe
+        date_of_birth:
+          type: string
+          format: date
+          examples:
+            - "1990-05-25"
+        nationality:
+          type: string
+          description: ISO 3166-1 alpha-2
+          examples:
+            - JP
+        document_type:
+          type: string
+          enum: [passport]
+        document_details:
+          $ref: '#/components/schemas/PassportDetails'
+
+    PassportDetails:
+      type: object
+      description: Document details for document_type = passport
+      properties:
+        number:
+          type: string
+          examples:
+            - "11223344"
+        issue_date:
+          type: string
+          format: date
+          examples:
+            - "2020-05-25"
+        expiry_date:
+          type: string
+          format: date
+          examples:
+            - "2030-05-25"
+        gender:
+          type: string
+          enum: [M, F]
+        issuer:
+          type: string
+        department_code:
+          type: string
+        series:
+          type: string
+
+    BrowserInfo:
+      type: object
+      required:
+        - ip
+      properties:
+        screen_height:
+          type: integer
+          examples:
+            - 1080
+        screen_width:
+          type: integer
+          examples:
+            - 1920
+        time_zone:
+          type: integer
+          description: UTC offset in minutes
+          examples:
+            - -120
+        color_depth:
+          type: integer
+          examples:
+            - 24
+        user_agent:
+          type: string
+        accept_header:
+          type: string
+        java_enabled:
+          type: boolean
+          examples:
+            - false
+        java_script_enabled:
+          type: boolean
+          examples:
+            - true
+        ip:
+          type: string
+          format: ipv4
+          examples:
+            - 192.168.1.1
+        language:
+          type: string
+          examples:
+            - en-US
+
+    PayerInfo:
+      type: object
+      properties:
+        payer_id:
+          type: string
+          description: Existing payer identifier for recurring payments
+          examples:
+            - payer_abc123
+
+    MobilePayinDetails:
+      type: object
+      required:
+        - phone
+      properties:
+        phone:
+          type: string
+          examples:
+            - "+79991234567"
+
+    PayoutCardDetails:
+      type: object
+      required:
+        - pan
+        - holder
+      properties:
+        pan:
+          type: string
+          examples:
+            - "4111111111111111"
+        holder:
+          type: string
+          examples:
+            - JOHN DOE
+        expiry_month:
+          type: string
+          examples:
+            - "12"
+        expiry_year:
+          type: string
+          examples:
+            - "26"
+
+    WalletDetails:
+      type: object
+      required:
+        - wallet_id
+      properties:
+        wallet_id:
+          type: string
+          examples:
+            - "wallet_abc123"
+        wallet_brand:
+          type: string
+          examples:
+            - PayPal
+
+    BankAccountDetails:
+      type: object
+      properties:
+        account_number:
+          type: string
+        ifsc_code:
+          type: string
+        swift_code:
+          type: string
+        bank_name:
+          type: string
+        document_number:
+          type: string
+        account_holder_name:
+          type: string
+        account_agency_number:
+          type: string
+        account_type_code:
+          type: string
+        pix_key:
+          type: string
+        pay_mode:
+          type: string
+        transit_number:
+          type: string
+        financial_institution_number:
+          type: string
+        bank_branch_name:
+          type: string
+        bank_branch_code:
+          type: string
+
+    TokenDetails:
+      type: object
+      required:
+        - withdrawal_token
+      properties:
+        withdrawal_token:
+          type: string
+          format: uuid
+
+    SbpDetails:
+      type: object
+      properties:
+        phone:
+          type: string
+          examples:
+            - "+79991234567"
+        bank:
+          type: string
+          examples:
+            - Sberbank
+
+    MobilePayoutDetails:
+      type: object
+      required:
+        - phone
+      properties:
+        phone:
+          type: string
+          examples:
+            - "+79991234567"
+        provider:
+          type: string
+          examples:
+            - Beeline
+
+    ThreeDSecureRequest:
+      type: object
+      properties:
+        challenge_window_size:
+          type: string
+          enum: ["01", "02", "03", "04", "05"]
+          description: |
+            01 — 250x400
+            02 — 390x400
+            03 — 500x600
+            04 — 600x400
+            05 — fullscreen
+          examples:
+            - "05"
+
+    CardDetails:
+      type: object
+      required:
+        - pan
+        - holder
+        - expiry_month
+        - expiry_year
+        - cvv
+      properties:
+        pan:
+          type: string
+          examples:
+            - "4111111111111111"
+        holder:
+          type: string
+          examples:
+            - JOHN DOE
+        expiry_month:
+          type: string
+          examples:
+            - "12"
+        expiry_year:
+          type: string
+          examples:
+            - "26"
+        cvv:
+          type: string
+          examples:
+            - "123"
+        pin:
+          type: string
+          description: Card PIN (only for specific flows)
+
+    # ── Response ──────────────────────────────────────────────────
+
+    PaymentResponse:
+      description: Payment response. Structure depends on status field.
+      oneOf:
+        - $ref: '#/components/schemas/ResponseCompleted'
+        - $ref: '#/components/schemas/ResponseAuthorized'
+        - $ref: '#/components/schemas/ResponseProcessing'
+        - $ref: '#/components/schemas/ResponseWaitingAction'
+        - $ref: '#/components/schemas/ResponseCancelled'
+        - $ref: '#/components/schemas/ResponseRejected'
+        - $ref: '#/components/schemas/ResponseRefunded'
+        - $ref: '#/components/schemas/ResponseCaptured'
+      discriminator:
+        propertyName: status
+        mapping:
+          completed:      '#/components/schemas/ResponseCompleted'
+          authorized:     '#/components/schemas/ResponseAuthorized'
+          processing:     '#/components/schemas/ResponseProcessing'
+          waiting_action: '#/components/schemas/ResponseWaitingAction'
+          cancelled:      '#/components/schemas/ResponseCancelled'
+          rejected:       '#/components/schemas/ResponseRejected'
+          refunded:       '#/components/schemas/ResponseRefunded'
+          captured:       '#/components/schemas/ResponseCaptured'
+
+    ResponseBase:
+      type: object
+      required:
+        - transaction_id
+        - status
+        - type
+        - merchant_data
+        - financial_data
+        - created_at
+      properties:
+        transaction_id:
+          type: string
+          pattern: '^\d+$'
+          description: Numeric transaction identifier
+          examples:
+            - "2148010266"
+        status:
+          type: string
+        type:
+          type: string
+          enum: [payin, payout]
+          examples:
+            - payin
+        merchant_data:
+          type: object
+          required:
+            - order_id
+          properties:
+            order_id:
+              type: string
+              examples:
+                - "order_9987"
+        financial_data:
+          type: object
+          required:
+            - amount
+            - currency
+          properties:
+            amount:
+              type: integer
+              examples:
+                - 10000
+            currency:
+              type: string
+              examples:
+                - RUB
+        created_at:
+          type: string
+          format: date-time
+          examples:
+            - "2024-04-15T10:30:00Z"
+
+    ResponseTransactionData:
+      type: object
+      properties:
+        rrn:
+          type: string
+          description: Retrieval Reference Number
+        auth_code:
+          type: string
+          description: Authorization code from acquirer
+        recurrent_token:
+          type: string
+          format: uuid
+          description: Token for subsequent recurring payments. Present when is_recurrent = true
+        withdrawal_token:
+          type: string
+          format: uuid
+          description: Token for withdrawal operations
+        sender_info:
+          type: object
+          properties:
+            masked_pan:
+              type: string
+              examples:
+                - "411111******1111"
+        receiver_info:
+          type: object
+          properties:
+            bank: {type: string}
+            account: {type: string}
+            phone: {type: string}
+            card: {type: string}
+            holder: {type: string}
+            bic: {type: string}
+
+    ResponseCompleted:
+      title: completed
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [completed]
+            transaction_data:
+              $ref: '#/components/schemas/ResponseTransactionData'
+
+    ResponseAuthorized:
+      title: authorized
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [authorized]
+            transaction_data:
+              $ref: '#/components/schemas/ResponseTransactionData'
+
+    ResponseProcessing:
+      title: processing
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [processing]
+
+    ResponseWaitingAction:
+      title: waiting_action
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [waiting_action]
+            action:
+              oneOf:
+                - $ref: '#/components/schemas/ActionThreeDSecure'
+                - $ref: '#/components/schemas/ActionRedirect'
+                - $ref: '#/components/schemas/ActionTransferCard'
+                - $ref: '#/components/schemas/ActionTransferPhone'
+                - $ref: '#/components/schemas/ActionTransferQr'
+                - $ref: '#/components/schemas/ActionTransferAccount'
+                - $ref: '#/components/schemas/ActionTopUpMobile'
+              discriminator:
+                propertyName: type
+                mapping:
+                  threed_secure:    '#/components/schemas/ActionThreeDSecure'
+                  redirect:         '#/components/schemas/ActionRedirect'
+                  transfer_card:    '#/components/schemas/ActionTransferCard'
+                  transfer_phone:   '#/components/schemas/ActionTransferPhone'
+                  transfer_qr:      '#/components/schemas/ActionTransferQr'
+                  transfer_account: '#/components/schemas/ActionTransferAccount'
+                  top_up_mobile:    '#/components/schemas/ActionTopUpMobile'
+
+    ActionDetailsThreeDSecure:
+      title: threed_secure
+      type: object
+      required:
+        - need_confirm
+        - data
+      properties:
+        need_confirm:
+          type: boolean
+          enum: [true, false]
+        data:
+          type: object
+          properties:
+            pareq:
+              type: string
+            md:
+              type: string
+            acs_url:
+              type: string
+              format: uri
+            method:
+              type: string
+              enum: [POST, GET]
+
+    ActionDetailsRedirect:
+      title: redirect
+      type: object
+      required:
+        - need_confirm
+        - data
+      properties:
+        need_confirm:
+          type: boolean
+          enum: [true, false]
+        data:
+          type: object
+          required: [url, method]
+          properties:
+            url:
+              type: string
+              format: uri
+            method:
+              type: string
+              enum: [POST, GET]
+
+    ActionDetailsTransferCard:
+      title: transfer_card
+      type: object
+      required:
+        - need_confirm
+        - data
+      properties:
+        need_confirm:
+          type: boolean
+          enum: [true, false]
+        data:
+          type: object
+          required: [card, holder, bank]
+          properties:
+            card:
+              type: string
+              examples:
+                - "4111******1111"
+            holder:
+              type: string
+              examples:
+                - JOHN DOE
+            bank:
+              type: string
+              examples:
+                - Sberbank
+
+    ActionDetailsTransferPhone:
+      title: transfer_phone
+      type: object
+      required:
+        - need_confirm
+        - data
+      properties:
+        need_confirm:
+          type: boolean
+          enum: [true, false]
+        data:
+          type: object
+          required: [phone, bank, holder]
+          properties:
+            phone:
+              type: string
+              examples:
+                - "+79991234567"
+            bank:
+              type: string
+              examples:
+                - Tinkoff
+            holder:
+              type: string
+              examples:
+                - JOHN DOE
+
+    ActionDetailsTransferQr:
+      title: transfer_qr
+      type: object
+      required:
+        - need_confirm
+        - data
+      properties:
+        need_confirm:
+          type: boolean
+          enum: [true, false]
+        data:
+          type: object
+          required: [image, payload, instruction]
+          properties:
+            image:
+              type: string
+              description: Base64 encoded QR image
+            payload:
+              type: string
+              description: Raw QR payload string for scanner
+            instruction:
+              type: string
+              description: Instructions for user
+
+    ActionDetailsTransferAccount:
+      title: transfer_account
+      type: object
+      required:
+        - need_confirm
+        - data
+      properties:
+        need_confirm:
+          type: boolean
+          enum: [true, false]
+        data:
+          type: object
+          required: [account, bic, bank, holder]
+          properties:
+            account:
+              type: string
+              examples:
+                - "40702810000000012345"
+            bic:
+              type: string
+              examples:
+                - "044525225"
+            bank:
+              type: string
+              examples:
+                - Sberbank
+            holder:
+              type: string
+              examples:
+                - JOHN DOE
+            purpose:
+              type: string
+              examples:
+                - "Payment for order order_9987"
+
+    ActionDetailsTopUpMobile:
+      title: top_up_mobile
+      type: object
+      required:
+        - need_confirm
+        - data
+      properties:
+        need_confirm:
+          type: boolean
+          enum: [true, false]
+        data:
+          type: object
+          required: [phone, provider]
+          properties:
+            phone:
+              type: string
+              examples:
+                - "+79991234567"
+            provider:
+              type: string
+              examples:
+                - Beeline
+
+    # ── Action Wrappers (for discriminator) ──────────────────────────
+
+    ActionThreeDSecure:
+      title: threed_secure
+      type: object
+      required:
+        - type
+        - details
+      properties:
+        type:
+          type: string
+          enum: [threed_secure]
+        details:
+          $ref: '#/components/schemas/ActionDetailsThreeDSecure'
+
+    ActionRedirect:
+      title: redirect
+      type: object
+      required:
+        - type
+        - details
+      properties:
+        type:
+          type: string
+          enum: [redirect]
+        details:
+          $ref: '#/components/schemas/ActionDetailsRedirect'
+
+    ActionTransferCard:
+      title: transfer_card
+      type: object
+      required:
+        - type
+        - details
+      properties:
+        type:
+          type: string
+          enum: [transfer_card]
+        details:
+          $ref: '#/components/schemas/ActionDetailsTransferCard'
+
+    ActionTransferPhone:
+      title: transfer_phone
+      type: object
+      required:
+        - type
+        - details
+      properties:
+        type:
+          type: string
+          enum: [transfer_phone]
+        details:
+          $ref: '#/components/schemas/ActionDetailsTransferPhone'
+
+    ActionTransferQr:
+      title: transfer_qr
+      type: object
+      required:
+        - type
+        - details
+      properties:
+        type:
+          type: string
+          enum: [transfer_qr]
+        details:
+          $ref: '#/components/schemas/ActionDetailsTransferQr'
+
+    ActionTransferAccount:
+      title: transfer_account
+      type: object
+      required:
+        - type
+        - details
+      properties:
+        type:
+          type: string
+          enum: [transfer_account]
+        details:
+          $ref: '#/components/schemas/ActionDetailsTransferAccount'
+
+    ActionTopUpMobile:
+      title: top_up_mobile
+      type: object
+      required:
+        - type
+        - details
+      properties:
+        type:
+          type: string
+          enum: [top_up_mobile]
+        details:
+          $ref: '#/components/schemas/ActionDetailsTopUpMobile'
+
+    ResponseCancelled:
+      title: cancelled
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [cancelled]
+            transaction_data:
+              $ref: '#/components/schemas/ResponseTransactionData'
+
+    ResponseRejected:
+      title: rejected
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [rejected]
+            transaction_data:
+              $ref: '#/components/schemas/ResponseTransactionData'
+            rejected_data:
+              type: object
+              required: [code, message]
+              properties:
+                code:
+                  type: string
+                  examples:
+                    - do_not_honor
+                message:
+                  type: string
+                  examples:
+                    - Transaction declined by issuer
+
+    ResponseRefunded:
+      title: refunded
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [refunded]
+            transaction_data:
+              $ref: '#/components/schemas/ResponseTransactionData'
+
+    ResponseCaptured:
+      title: captured
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [captured]
+            transaction_data:
+              $ref: '#/components/schemas/ResponseTransactionData'
+
+    # ── Common ────────────────────────────────────────────────────
+
+    PaymentStatus:
+      type: string
+      enum:
+        - completed
+        - authorized
+        - processing
+        - waiting_action
+        - cancelled
+        - rejected
+        - refunded
+        - captured
+      examples:
+        - completed
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              examples:
+                - validation_error
+            message:
+              type: string
+              examples:
+                - Required field missing
+
+  # ─── Security Schemes ───────────────────────────────────────────
+
+  securitySchemes:
+    ApiAuth:
+      type: apiKey
+      in: header
+      name: Api-Terminal-ID
+      description: >-
+        Terminal identifier used together with Api-Signature and Api-Timestamp
+        for HMAC-SHA256 request authentication. See the Authentication tag for
+        the full signature algorithm.
+
